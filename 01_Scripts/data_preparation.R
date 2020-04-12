@@ -1,6 +1,6 @@
 # Packages ====
 
-packages <- c("dplyr","ggplot2","tidyr","xml2","purrr")
+packages <- c("dplyr","ggplot2","tidyr","xml2","purrr","stringr")
 
 for (package in packages) {
   if (!require(package, character.only = TRUE)) install.packages(package)
@@ -75,6 +75,18 @@ prix_20200403 <- read_xml("00_Inputs/PrixCarburants_quotidien_20200403.xml")
   head(prix3)
   rm(prix1,prix2)
   
+  # Infos complémentaires sur les pdv
+  infos_pdv <- cbind(pdv3,ville3,adr3)
+  names(infos_pdv) <- c("pdv_id","latitude","longitude","cp", "type_route","ville","adresse")
+  rm(adr3,pdv3,prix3,ville3)
+  # Il faut nettoyer les données maintenant, avec les noms de villes propres et homogènes
+  infos_pdv <- infos_pdv %>% 
+    mutate(pdv_id = as.numeric(pdv_id),
+           latitude = as.numeric(latitude) / 100000,
+           longitude = as.numeric(longitude) / 100000,
+           ville = str_to_title(ville),
+           adresse = str_to_title(adresse))
+  # Ensuite, si possible, y adjoindre l'enseigne.
   
   # Problème : il faut l'identifiant du point de vente pour chaque prix, sinon on ne peut pas faire le lien
     # Tentative 1 : on compte les pdv à partir de l'identifiant du carburant : pour avoir une approximation
@@ -111,10 +123,51 @@ prix_20200403 <- read_xml("00_Inputs/PrixCarburants_quotidien_20200403.xml")
     df <- bind_rows(df,temp)
     }
   
-  
-  
+
   # autre possibilité à creuser avec la fonction xml_contents ?
-  test <- xml_contents(prix_20200403)
+  test <- xml_contents(point1)
   test2 <- xml_attrs(test)
   test2 <- as_tibble(do.call(rbind,test))
   
+  # Tentative 4 : on part du prix, puis on remonte pour trouver le parent
+  prix <- xml_find_all(prix_20200403,"//prix")
+  # On a un jeu de données avec uniquement les stations avec un noeud prix au moins
+  parent_prix <- xml_parent(prix)
+  # Le but est d'extraire pour chaque station l'ID, et les prix
+    # Boucle sur la liste entière
+    longueur <- length(parent_prix)
+    df <- tibble()
+    for (i in seq(1,longueur,1)){
+      # Extraction des valeurs de tous les attributs
+      temp <- parent_prix[[i]] %>% xml_children() %>% xml_attrs()
+      # Cpnversion en dataframe
+      temp <- as_tibble(do.call(rbind,temp))
+      # Extaction le nom des attributs/noeuds
+      name <- parent_prix[[i]] %>% xml_children() %>% xml_name() %>% as_tibble %>% filter(value %in% c("horaires","prix","rupture"))
+      # Agrégation les valeurs et les boms
+      temp <- cbind(name,temp)
+      # Ajout de l'id dans le DF
+      temp$pdv_id <- parent_prix[[i]] %>% xml_attrs() %>% as_tibble() %>% filter(row_number()==1) %>% as.numeric()
+      # Ajout du résultat de l'itétation au DF des résultats globaux
+      df <- bind_rows(df,temp)
+    }
+    rm(temp,name,prix,parent_prix,i,longueur)
+    # Nettoyage du dataframe réalisé
+    df_clean <- df %>%
+      filter(value != "horaires") %>% 
+      mutate(valeur = as.numeric(valeur)/1000,
+             # Pour traiter l'inversion de colonne entre les lignes "rupture" et "prix"
+             nom2 = nom, # Variable temporaire
+             nom = ifelse(value == "rupture",id,nom),
+             id = ifelse(value =="rupture",nom2,id)) %>% 
+      select(-nom2)
+    
+    # Ajout des variables annexes pour avoir un dataframe tidy avec toutes les infos nécessaires
+    data_20200403 <- infos_pdv %>% left_join(df_clean, by = c('pdv_id'))
+    
+    
+    # Sauvegarde du fichier
+    saveRDS(data_20200403, file = "00_Inputs/data_20200403.rds")
+    
+    
+     
